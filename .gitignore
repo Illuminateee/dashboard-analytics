@@ -143,7 +143,7 @@ $RECYCLE.BIN/
 *~
 
 # Log files
-logs
+
 *.log
 
 # Database files (for development)
@@ -244,7 +244,6 @@ tramp
 
 # Backend specific
 backend/node_modules/
-backend/logs/
 backend/uploads/
 backend/.env
 backend/dist/

@@ -155,34 +155,36 @@ router.get('/analytics/age-groups', async (req, res) => {
 
     console.log('Age group analytics filter:', filter);
 
-    // Use ageGroup field directly if it exists, otherwise calculate it
+    // Calculate age from birth year and group by age ranges
     const ageGroupStats = await User.aggregate([
       { $match: filter }, // Apply filters first
       {
         $addFields: {
-          computedAgeGroup: {
-            $cond: {
-              if: { $ne: ['$ageGroup', null] },
-              then: '$ageGroup', // Use existing ageGroup field
-              else: {
-                $switch: {
-                  branches: [
-                    { case: { $lte: ['$age', 25] }, then: '18-25' },
-                    { case: { $lte: ['$age', 35] }, then: '26-35' },
-                    { case: { $lte: ['$age', 45] }, then: '36-45' },
-                    { case: { $lte: ['$age', 55] }, then: '46-55' },
-                    { case: { $gt: ['$age', 55] }, then: '55+' }
-                  ],
-                  default: 'Unknown'
-                }
-              }
+          // Calculate actual age from birth year
+          actualAge: {
+            $subtract: [2024, '$age'] // Assuming 'age' field contains birth year
+          }
+        }
+      },
+      {
+        $addFields: {
+          ageGroup: {
+            $switch: {
+              branches: [
+                { case: { $and: [{ $gte: ['$actualAge', 18] }, { $lte: ['$actualAge', 25] }] }, then: '18-25' },
+                { case: { $and: [{ $gte: ['$actualAge', 26] }, { $lte: ['$actualAge', 35] }] }, then: '26-35' },
+                { case: { $and: [{ $gte: ['$actualAge', 36] }, { $lte: ['$actualAge', 45] }] }, then: '36-45' },
+                { case: { $and: [{ $gte: ['$actualAge', 46] }, { $lte: ['$actualAge', 55] }] }, then: '46-55' },
+                { case: { $gte: ['$actualAge', 56] }, then: '55+' }
+              ],
+              default: 'Unknown'
             }
           }
         }
       },
       {
         $group: {
-          _id: '$computedAgeGroup',
+          _id: '$ageGroup',
           count: { $sum: 1 }
         }
       },
@@ -196,11 +198,14 @@ router.get('/analytics/age-groups', async (req, res) => {
       { $sort: { count: -1 } }
     ]);
 
+    console.log('Age group stats result:', ageGroupStats);
+
     res.json({
       success: true,
       data: ageGroupStats
     });
   } catch (error) {
+    console.error('Error in age group analytics:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -318,6 +323,180 @@ router.get('/filter-options', async (req, res) => {
         locationTypes: locationTypes.filter(Boolean).sort(),
         digitalInterests: digitalInterests.filter(Boolean).sort(),
         ageGroups: ageGroups
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get('/user-details', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const skip = (page - 1) * limit;
+    
+    // Build filter object
+    const filter = {};
+    if (req.query.nameOfLocation) filter.nameOfLocation = req.query.nameOfLocation;
+    if (req.query.email) filter.email = req.query.email;
+    if (req.query.loginHour) filter.loginHour = req.query.loginHour;
+    if (req.query.gender) filter.gender = req.query.gender;
+    if (req.query.ageGroup) filter.ageGroup = req.query.ageGroup;
+    if (req.query.brandDevice) filter.brandDevice = req.query.brandDevice;
+    if (req.query.locationType) filter.locationType = req.query.locationType;
+    if (req.query.digitalInterest) filter.digitalInterest = req.query.digitalInterest;
+    
+    const [users, total] = await Promise.all([
+      User.find(filter)
+        .select('name email noTelp age gender brandDevice digitalInterest locationType nameOfLocation loginHour date ageGroup')
+        .skip(skip)
+        .limit(limit)
+        .sort({ name: 1 })
+        .lean(),
+      User.countDocuments(filter)
+    ]);
+
+    res.json({
+      success: true,
+      data: users,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        hasNext: page * limit < total,
+        hasPrev: page > 1
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/analytics/login-hours:
+ *   get:
+ *     summary: Get login hour distribution analytics
+ */
+router.get('/analytics/login-hours', async (req, res) => {
+  try {
+    // Build filter object from query parameters
+    const filter = {};
+    if (req.query.gender) filter.gender = req.query.gender;
+    if (req.query.ageGroup) filter.ageGroup = req.query.ageGroup;
+    if (req.query.brandDevice) filter.brandDevice = req.query.brandDevice;
+    if (req.query.locationType) filter.locationType = req.query.locationType;
+    if (req.query.digitalInterest) filter.digitalInterest = req.query.digitalInterest;
+    if (req.query.nameOfLocation) filter.nameOfLocation = req.query.nameOfLocation;
+
+    const loginHourStats = await User.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$loginHour',
+          count: { $sum: 1 },
+          users: { 
+            $push: {
+              name: '$name',
+              email: '$email',
+              nameOfLocation: '$nameOfLocation'
+            }
+          }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          loginHour: '$_id',
+          count: 1,
+          userCount: { $size: '$users' }
+        }
+      },
+      { $sort: { loginHour: 1 } }
+    ]);
+
+    res.json({
+      success: true,
+      data: loginHourStats
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * @swagger
+ * /api/analytics/locations:
+ *   get:
+ *     summary: Get location analytics
+ */
+router.get('/analytics/locations', async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.gender) filter.gender = req.query.gender;
+    if (req.query.ageGroup) filter.ageGroup = req.query.ageGroup;
+    if (req.query.brandDevice) filter.brandDevice = req.query.brandDevice;
+    if (req.query.locationType) filter.locationType = req.query.locationType;
+    if (req.query.digitalInterest) filter.digitalInterest = req.query.digitalInterest;
+
+    const locationStats = await User.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$nameOfLocation',
+          count: { $sum: 1 },
+          uniqueUsers: { $addToSet: '$email' }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          location: '$_id',
+          count: 1,
+          uniqueUserCount: { $size: '$uniqueUsers' }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]);
+
+    res.json({
+      success: true,
+      data: locationStats
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ...existing code...
+
+router.get('/filter-options', async (req, res) => {
+  try {
+    // Get all unique values for each filter field
+    const [genders, deviceBrands, locationTypes, digitalInterests, locations, loginHours] = await Promise.all([
+      User.distinct('gender'),
+      User.distinct('brandDevice'),
+      User.distinct('locationType'),
+      User.distinct('digitalInterest'),
+      User.distinct('nameOfLocation'),
+      User.distinct('loginHour')
+    ]);
+
+    // Age groups are calculated, so we'll provide the standard ranges
+    const ageGroups = ['18-25', '26-35', '36-45', '46-55', '55+'];
+
+    res.json({
+      success: true,
+      data: {
+        genders: genders.filter(Boolean).sort(),
+        deviceBrands: deviceBrands.filter(Boolean).sort(),
+        locationTypes: locationTypes.filter(Boolean).sort(),
+        digitalInterests: digitalInterests.filter(Boolean).sort(),
+        ageGroups: ageGroups,
+        locations: locations.filter(Boolean).sort(),
+        loginHours: loginHours.filter(Boolean).sort()
       }
     });
   } catch (error) {
